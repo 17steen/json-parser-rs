@@ -13,30 +13,29 @@ pub enum JsonObject {
     Null,
 }
 
-#[allow(dead_code)]
 impl JsonObject {
-    fn object(self) -> Option<Object> {
+    pub fn object(self) -> Option<Object> {
         match self {
             JsonObject::Object(object) => Some(object),
             _ => None,
         }
     }
 
-    fn array(self) -> Option<Array> {
+    pub fn array(self) -> Option<Array> {
         match self {
             JsonObject::Array(array) => Some(array),
             _ => None,
         }
     }
 
-    fn boolean(self) -> Option<bool> {
+    pub fn boolean(self) -> Option<bool> {
         match self {
             JsonObject::Boolean(boolean) => Some(boolean),
             _ => None,
         }
     }
 
-    fn is_null(self) -> bool {
+    pub fn is_null(self) -> bool {
         matches!(self, JsonObject::Null)
     }
 }
