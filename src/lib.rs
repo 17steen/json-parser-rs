@@ -35,6 +35,20 @@ impl JsonObject {
         }
     }
 
+    pub fn number(self) -> Option<f64> {
+        match self {
+            JsonObject::Number(number) => Some(number),
+            _ => None,
+        }
+    }
+
+    pub fn string(self) -> Option<String> {
+        match self {
+            JsonObject::String(string) => Some(string),
+            _ => None,
+        }
+    }
+
     pub fn is_null(self) -> bool {
         matches!(self, JsonObject::Null)
     }
@@ -442,7 +456,18 @@ mod tests {
     }
 
     #[test]
-    fn complex_object() {
+    fn getters() -> Result<(), Box<dyn std::error::Error>> {
+        let result = parse_json_string(" 123456789 ")?
+            .number()
+            .ok_or("not a number")?;
+
+        assert_eq!(123456789., result);
+
+        Ok(())
+    }
+
+    #[test]
+    fn complex_object() -> Result<(), Box<dyn std::error::Error>> {
         parse_json_string(
             r#"{
                 "my_array" : [   true,     false, true      ],
@@ -452,7 +477,7 @@ mod tests {
                 },
                 "empty object" : { }
         }"#,
-        )
-        .unwrap();
+        )?;
+        Ok(())
     }
 }
