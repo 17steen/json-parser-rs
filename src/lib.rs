@@ -1,7 +1,53 @@
 #![feature(box_syntax)]
+#![feature(try_blocks)]
 
 pub type Array = Vec<JsonObject>;
-pub type Object = Vec<(String, JsonObject)>;
+pub type ObjectImpl = Vec<(String, JsonObject)>;
+
+#[derive(Debug, PartialEq)]
+pub struct Object {
+    entries: ObjectImpl,
+}
+
+impl Object {
+    pub fn get(&self, index: &str) -> Option<&JsonObject> {
+        Some(&self.entries.iter().find(|(key, _)| key == index)?.1)
+    }
+
+    pub fn get_mut(&mut self, index: &str) -> Option<&mut JsonObject> {
+        Some(&mut self.entries.iter_mut().find(|(key, _)| key == index)?.1)
+    }
+
+    #[inline]
+    pub fn entries(&self) -> &ObjectImpl {
+        &self.entries
+    }
+
+    #[inline]
+    pub fn entries_mut(&mut self) -> &mut ObjectImpl {
+        &mut self.entries
+    }
+
+    pub fn keys(&self) -> impl DoubleEndedIterator + '_ {
+        self.entries().iter().map(|(key, _)| key)
+    }
+
+    pub fn keys_mut(&mut self) -> impl DoubleEndedIterator + '_ {
+        self.entries_mut().iter_mut().map(|(key, _)| key)
+    }
+
+    pub fn values(&self) -> impl DoubleEndedIterator + '_ {
+        self.entries().iter().map(|(_, value)| value)
+    }
+
+    pub fn values_mut(&mut self) -> impl DoubleEndedIterator + '_ {
+        self.entries_mut().iter_mut().map(|(_, value)| value)
+    }
+
+    fn from_impl(entries: ObjectImpl) -> Self {
+        Object { entries }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum JsonObject {
@@ -13,42 +59,60 @@ pub enum JsonObject {
     Null,
 }
 
+macro_rules! getter {
+    ($pat:path, $ident:ident, $name:ident) => {
+        #[inline]
+        pub fn $name(&self) -> Option<&$ident> {
+            match self {
+                $pat($name) => Some($name),
+                _ => None,
+            }
+        }
+    };
+}
+
+macro_rules! getter_mut {
+    ($pat:path, $ident:ident, $name:ident) => {
+        #[inline]
+        pub fn $name(&mut self) -> Option<&mut $ident> {
+            match self {
+                $pat($name) => Some($name),
+                _ => None,
+            }
+        }
+    };
+}
+
+macro_rules! getter_into {
+    ($pat:path, $ident:ident, $name:ident) => {
+        #[inline]
+        pub fn $name(self) -> Option<$ident> {
+            match self {
+                $pat($name) => Some($name),
+                _ => None,
+            }
+        }
+    };
+}
+
 impl JsonObject {
-    pub fn object(self) -> Option<Object> {
-        match self {
-            JsonObject::Object(object) => Some(object),
-            _ => None,
-        }
-    }
+    getter!(JsonObject::Object, Object, object);
+    getter!(JsonObject::Array, Array, array);
+    getter!(JsonObject::Boolean, bool, boolean);
+    getter!(JsonObject::Number, f64, number);
+    getter!(JsonObject::String, String, string);
+    getter_mut!(JsonObject::Object, Object, object_mut);
+    getter_mut!(JsonObject::Array, Array, array_mut);
+    getter_mut!(JsonObject::Boolean, bool, boolean_mut);
+    getter_mut!(JsonObject::Number, f64, number_mut);
+    getter_mut!(JsonObject::String, String, string_mut);
+    getter_into!(JsonObject::Object, Object, into_object);
+    getter_into!(JsonObject::Array, Array, into_array);
+    getter_into!(JsonObject::Boolean, bool, into_boolean);
+    getter_into!(JsonObject::Number, f64, into_number);
+    getter_into!(JsonObject::String, String, into_string);
 
-    pub fn array(self) -> Option<Array> {
-        match self {
-            JsonObject::Array(array) => Some(array),
-            _ => None,
-        }
-    }
-
-    pub fn boolean(self) -> Option<bool> {
-        match self {
-            JsonObject::Boolean(boolean) => Some(boolean),
-            _ => None,
-        }
-    }
-
-    pub fn number(self) -> Option<f64> {
-        match self {
-            JsonObject::Number(number) => Some(number),
-            _ => None,
-        }
-    }
-
-    pub fn string(self) -> Option<String> {
-        match self {
-            JsonObject::String(string) => Some(string),
-            _ => None,
-        }
-    }
-
+    #[inline]
     pub fn is_null(self) -> bool {
         matches!(self, JsonObject::Null)
     }
@@ -237,7 +301,7 @@ fn parse_object_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Ob
             '"' => {}
             ch @ _ => {
                 if could_be_empty && ch == '}' {
-                    return Ok(object);
+                    return Ok(Object::from_impl(object));
                 } else {
                     return Err(JsonError::UnexpectedChar(ch));
                 }
@@ -266,7 +330,7 @@ fn parse_object_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Ob
 
         match skipped.next().ok_or(JsonError::EarlyEndOfStream)? {
             ',' => continue,
-            '}' => return Ok(object),
+            '}' => return Ok(Object::from_impl(object)),
             ch @ _ => return Err(JsonError::UnexpectedChar(ch)),
         }
     }
@@ -458,7 +522,7 @@ mod tests {
     #[test]
     fn getters() -> Result<(), Box<dyn std::error::Error>> {
         let result = parse_json_string(" 123456789 ")?
-            .number()
+            .into_number()
             .ok_or("not a number")?;
 
         assert_eq!(123456789., result);
@@ -468,9 +532,9 @@ mod tests {
 
     #[test]
     fn complex_object() -> Result<(), Box<dyn std::error::Error>> {
-        parse_json_string(
+        let mut json = parse_json_string(
             r#"{
-                "my_array" : [   true,     false, true      ],
+                "my_array" : [   727 ,     42 , 73      ],
                 "my_null" : null   ,
                 "my_object"   :   {
                     "inner key" : 123.3214
@@ -478,6 +542,23 @@ mod tests {
                 "empty object" : { }
         }"#,
         )?;
-        Ok(())
+
+        let maybe: Option<()> = try {
+            json.object_mut()?
+                .get_mut("my_array")?
+                .array_mut()?
+                .sort_by(|a, b| a.number().partial_cmp(&b.number()).unwrap());
+
+            assert!(json
+                .object()?
+                .get("my_array")?
+                .array()?
+                .iter()
+                .map(JsonObject::number)
+                .map(Option::unwrap)
+                .eq(&[42., 73., 727.]));
+        };
+
+        maybe.ok_or("nope".into())
     }
 }
