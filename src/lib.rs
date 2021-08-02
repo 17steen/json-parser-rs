@@ -9,6 +9,7 @@ pub enum JsonObject {
     Array(Array),
     String(String),
     Boolean(bool),
+    Number(f64),
     Null,
 }
 
@@ -17,8 +18,9 @@ pub enum JsonError {
     UnexpectedChar(char),
     UnexpectedKeyword,
     UnknownEscapeCharacter(char),
-    ExtraChars,
+    ExtraChars(Vec<char>),
     EarlyEndOfStream,
+    LeadingZero,
 }
 
 #[inline]
@@ -30,18 +32,27 @@ pub fn parse_json_string(json_str: &str) -> Result<JsonObject, JsonError> {
 pub fn parse_json_from_iter(
     json_iter: &mut dyn Iterator<Item = char>,
 ) -> Result<JsonObject, JsonError> {
-    let result = parse_json_impl(json_iter);
+    use core::iter::once;
 
-    let mut should_be_empty = json_iter.skip_while(|ch| ch.is_whitespace());
+    let (value, excess) = parse_json_impl(json_iter)?;
 
-    if should_be_empty.next().is_some() {
-        return Err(JsonError::ExtraChars);
+    let mut should_be_empty = excess
+        .into_iter()
+        .chain(json_iter)
+        .skip_while(|ch| ch.is_whitespace());
+
+    if let Some(ch) = should_be_empty.next() {
+        Err(JsonError::ExtraChars(
+            once(ch).chain(should_be_empty).collect(),
+        ))
     } else {
-        return result;
+        Ok(value)
     }
 }
 
-fn parse_json_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<JsonObject, JsonError> {
+fn parse_json_impl(
+    json_iter: &mut dyn Iterator<Item = char>,
+) -> Result<(JsonObject, Option<char>), JsonError> {
     let mut chars = json_iter.skip_while(|ch| ch.is_whitespace());
 
     let result = match chars.next().ok_or(JsonError::EarlyEndOfStream)? {
@@ -58,10 +69,76 @@ fn parse_json_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<JsonObje
         //object
         '{' => parse_object_impl(&mut chars).map(JsonObject::Object),
         //has to be a number
-        ch @ _ => Err(JsonError::UnexpectedChar(ch)),
+        ch @ _ => {
+            return parse_number_impl(json_iter, ch)
+                .map(|(n, excess)| (JsonObject::Number(n), excess));
+        }
     };
 
-    result
+    result.map(|obj| (obj, None))
+}
+
+fn parse_number_impl(
+    iter: &mut dyn Iterator<Item = char>,
+    starting_character: char,
+) -> Result<(f64, Option<char>), JsonError> {
+    let sign;
+
+    let first_char = match starting_character {
+        '-' => {
+            sign = -1.;
+            iter.next().ok_or(JsonError::EarlyEndOfStream)?
+        }
+        other @ _ => {
+            sign = 1.;
+            other
+        }
+    };
+
+    let mut number = match first_char {
+        digit @ '1'..='9' => digit.to_digit(10).unwrap() as f64,
+        //no leading 0 allowed other than for fraction
+        '0' => match iter.next().ok_or(JsonError::EarlyEndOfStream)? {
+            '.' => return parse_fraction_part_impl(iter).map(|(number, ch)| (number * sign, ch)),
+            _ => return Err(JsonError::LeadingZero),
+        },
+        _ => return Err(JsonError::UnexpectedChar(first_char)),
+    };
+
+    loop {
+        match iter.next() {
+            Some(digit @ '0'..='9') => {
+                number *= 10.;
+                number += digit.to_digit(10).unwrap() as f64;
+            }
+            Some('.') => {
+                return parse_fraction_part_impl(iter)
+                    .map(|(fraction, ch)| ((number + fraction) * sign, ch));
+            }
+            //jesus…
+            option @ _ => return Ok((number * sign, option)),
+        }
+    }
+}
+
+//to be called when '.' is encountered while parsing number, should return a fraction (0.something)
+fn parse_fraction_part_impl(
+    iter: &mut dyn Iterator<Item = char>,
+) -> Result<(f64, Option<char>), JsonError> {
+    let mut number = 0.;
+
+    for n in 1.. {
+        match iter.next() {
+            Some(digit @ '0'..='9') => {
+                let digit = digit.to_digit(10).unwrap() as f64;
+                number += digit / 10_f64.powi(n);
+            }
+            //jesus…
+            option @ _ => return Ok((number, option)),
+        }
+    }
+
+    unreachable!();
 }
 
 //expects starting '"' to already be eaten
@@ -88,18 +165,18 @@ fn parse_escape_character_impl(
     let ch = json_iter.next().ok_or(JsonError::EarlyEndOfStream)?;
 
     match ch {
-        c @ ('"' | '\\' | '/') => Ok(c),
+        '"' | '\\' | '/' => Ok(ch),
         'n' => Ok('\n'),
         'r' => Ok('\r'),
         't' => Ok('\t'),
         'f' => todo!("implement \\f escape char"),
         'b' => todo!("implement \\b escape char"),
         'u' => todo!("unicode"),
-        c @ _ => Err(JsonError::UnknownEscapeCharacter(c)),
+        _ => Err(JsonError::UnknownEscapeCharacter(ch)),
     }
 }
 
-fn parse_object_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<Object, JsonError> {
+fn parse_object_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Object, JsonError> {
     let mut could_be_empty = true;
 
     let mut object = vec![];
@@ -129,11 +206,11 @@ fn parse_object_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<Object
             ch @ _ => return Err(JsonError::UnexpectedChar(ch)),
         }
 
-        let value = parse_json_impl(json_iter)?;
+        let (value, maybe_excess) = parse_json_impl(json_iter)?;
 
         object.push((key, value));
 
-        let mut skipped = json_iter.skip_while(|ch| ch.is_whitespace());
+        let mut skipped = maybe_excess.into_iter().chain(&mut json_iter).skip_while(|ch| ch.is_whitespace());
 
         match skipped.next().ok_or(JsonError::EarlyEndOfStream)? {
             ',' => continue,
@@ -171,16 +248,22 @@ fn parse_false_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<JsonObj
 }
 
 fn parse_array_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Array, JsonError> {
-    let mut vec = Vec::new();
+    let mut vec: Vec<JsonObject> = Vec::new();
 
     let mut could_be_empty = true;
 
     loop {
-        let result = parse_json_impl(&mut json_iter);
+        let result = parse_json_impl(json_iter);
+
+        let excess;
 
         if could_be_empty {
             match result {
-                Ok(value) => vec.push(value),
+                Ok((value, maybe_excess)) => {
+                    excess = maybe_excess;
+
+                    vec.push(value)
+                }
                 Err(JsonError::UnexpectedChar(']')) => {
                     //empty array
                     return Ok(vec);
@@ -190,10 +273,17 @@ fn parse_array_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Arr
 
             could_be_empty = false;
         } else {
-            vec.push(result?);
+            let (value, maybe_excess) = result?;
+            excess = maybe_excess;
+            vec.push(value);
         }
 
-        let mut chars = json_iter.skip_while(|ch| ch.is_whitespace());
+        let chars = &mut excess
+            .into_iter()
+            .chain(&mut json_iter)
+            .skip_while(|ch| ch.is_whitespace());
+
+        //this is such a hack
 
         match chars.next().ok_or(JsonError::EarlyEndOfStream)? {
             ',' => continue,
@@ -232,6 +322,16 @@ mod tests {
             JsonObject::Array(array) => {
                 assert!(matches!(array.as_slice(), [JsonObject::Boolean(true),]));
             }
+            _ => panic!(),
+        }
+
+        let result = parse_json_string("[ 123 ]").unwrap();
+
+        match result {
+            JsonObject::Array(array) => match array[0] {
+                JsonObject::Number(n @ _) => assert_eq!(n, 123.),
+                _ => panic!(),
+            },
             _ => panic!(),
         }
     }
@@ -279,36 +379,38 @@ mod tests {
 
     #[test]
     fn nested_array_type() {
-        assert!(parse_json_string("[true, [ null, null ] ]").is_ok());
+        parse_json_string("[true, [ null, 123.321 ] ]").unwrap();
+        parse_json_string("[true, [ null, 123] ]").unwrap();
     }
 
     #[test]
     fn empty_object() {
         parse_json_string("{}").unwrap();
+    }
 
-        /*
-        parse_json_string(
-            r#"{
-                "my_array" : [true, false, true],
-                "my_null" : null,
-                "my_object" : {
-                    "inner key" : "inner value"
-                },
-                "empty object" : { }
-        }"#,
-        )
-        .unwrap();
-        */
+    #[test]
+    fn just_a_number() {
+        assert!(
+            matches!(parse_json_string("123").unwrap(), JsonObject::Number(ch @ _) if {ch == 123.})
+        );
+
+        parse_json_string("    3216546549879876214351.25416546546545646546546321   ").unwrap();
+
+        //parse_json_string(r#"{ "my_number" : 1233.32465 }"#).unwrap();
+
+        assert!(
+            matches!(parse_json_string("123 ").unwrap(), JsonObject::Number(ch @ _) if {ch == 123.})
+        );
     }
 
     #[test]
     fn complex_object() {
         parse_json_string(
             r#"{
-                "my_array" : [true, false, true],
-                "my_null" : null,
-                "my_object" : {
-                    "inner key" : "inner value"
+                "my_array" : [   true,     false, true      ],
+                "my_null" : null   ,
+                "my_object"   :   {
+                    "inner key" : 123.3214
                 },
                 "empty object" : { }
         }"#,
