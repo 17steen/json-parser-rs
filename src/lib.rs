@@ -213,7 +213,7 @@ fn parse_number_impl(
         //no leading 0 allowed other than for fraction
         '0' => match iter.next().ok_or(JsonError::EarlyEndOfStream)? {
             '.' => return parse_fraction_part_impl(iter).map(|(number, ch)| (number * sign, ch)),
-            _ => return Err(JsonError::LeadingZero),
+            ch @ _ => return Ok((0., Some(ch))),
         },
         _ => return Err(JsonError::UnexpectedChar(first_char)),
     };
@@ -511,6 +511,8 @@ mod tests {
         );
 
         parse_json_string("    3216546549879876214351.25416546546545646546546321   ").unwrap();
+
+        parse_json_string("   0   ").unwrap();
 
         //parse_json_string(r#"{ "my_number" : 1233.32465 }"#).unwrap();
 
