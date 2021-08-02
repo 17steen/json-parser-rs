@@ -13,6 +13,34 @@ pub enum JsonObject {
     Null,
 }
 
+#[allow(dead_code)]
+impl JsonObject {
+    fn object(self) -> Option<Object> {
+        match self {
+            JsonObject::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
+    fn array(self) -> Option<Array> {
+        match self {
+            JsonObject::Array(array) => Some(array),
+            _ => None,
+        }
+    }
+
+    fn boolean(self) -> Option<bool> {
+        match self {
+            JsonObject::Boolean(boolean) => Some(boolean),
+            _ => None,
+        }
+    }
+
+    fn is_null(self) -> bool {
+        matches!(self, JsonObject::Null)
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum JsonError {
     UnexpectedChar(char),
@@ -210,7 +238,10 @@ fn parse_object_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Ob
 
         object.push((key, value));
 
-        let mut skipped = maybe_excess.into_iter().chain(&mut json_iter).skip_while(|ch| ch.is_whitespace());
+        let mut skipped = maybe_excess
+            .into_iter()
+            .chain(&mut json_iter)
+            .skip_while(|ch| ch.is_whitespace());
 
         match skipped.next().ok_or(JsonError::EarlyEndOfStream)? {
             ',' => continue,
