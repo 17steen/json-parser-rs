@@ -50,6 +50,14 @@ pub enum JsonError {
     LeadingZero,
 }
 
+impl std::fmt::Display for JsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for JsonError {}
+
 #[inline]
 pub fn parse_json_string(json_str: &str) -> Result<JsonObject, JsonError> {
     return parse_json_from_iter(&mut json_str.chars());
