@@ -1,5 +1,6 @@
 #![feature(box_syntax)]
 #![feature(try_blocks)]
+#![feature(bool_to_option)]
 
 pub type Array = Vec<JsonObject>;
 pub type ObjectImpl = Vec<(String, JsonObject)>;
@@ -125,6 +126,7 @@ pub enum JsonError {
     UnknownEscapeCharacter(char),
     ExtraChars(Vec<char>),
     EarlyEndOfStream,
+    InvalidUnicode,
     LeadingZero,
 }
 
@@ -212,7 +214,8 @@ fn parse_number_impl(
         digit @ '1'..='9' => digit.to_digit(10).unwrap() as f64,
         //no leading 0 allowed other than for fraction
         '0' => match iter.next().ok_or(JsonError::EarlyEndOfStream)? {
-            '.' => return parse_fraction_part_impl(iter).map(|(number, ch)| (number * sign, ch)),
+            '.' => return parse_fraction_part_impl(iter, 0., sign),
+            'e' | 'E' => return parse_e_notation_impl(iter, 0.),
             ch @ _ => return Ok((0., Some(ch))),
         },
         _ => return Err(JsonError::UnexpectedChar(first_char)),
@@ -225,8 +228,10 @@ fn parse_number_impl(
                 number += digit.to_digit(10).unwrap() as f64;
             }
             Some('.') => {
-                return parse_fraction_part_impl(iter)
-                    .map(|(fraction, ch)| ((number + fraction) * sign, ch));
+                return parse_fraction_part_impl(iter, number, sign);
+            }
+            Some('e' | 'E') => {
+                return parse_e_notation_impl(iter, number * sign);
             }
             //jesus…
             option @ _ => return Ok((number * sign, option)),
@@ -237,6 +242,8 @@ fn parse_number_impl(
 //to be called when '.' is encountered while parsing number, should return a fraction (0.something)
 fn parse_fraction_part_impl(
     iter: &mut dyn Iterator<Item = char>,
+    integer_part: f64,
+    sign: f64,
 ) -> Result<(f64, Option<char>), JsonError> {
     let mut number = 0.;
 
@@ -246,12 +253,61 @@ fn parse_fraction_part_impl(
                 let digit = digit.to_digit(10).unwrap() as f64;
                 number += digit / 10_f64.powi(n);
             }
+            Some('e' | 'E') => {
+                return parse_e_notation_impl(iter, (number + integer_part) * sign);
+            }
             //jesus…
-            option @ _ => return Ok((number, option)),
+            option @ _ => {
+                let result = (integer_part + number) * sign;
+                return Ok((result, option));
+            }
         }
     }
 
     unreachable!();
+}
+
+fn parse_e_notation_impl(
+    json_iter: &mut dyn Iterator<Item = char>,
+    number: f64,
+) -> Result<(f64, Option<char>), JsonError> {
+    let mut maybe_digit = None;
+
+    let sign: i32;
+
+    match json_iter.next().ok_or(JsonError::EarlyEndOfStream)? {
+        '-' => {
+            sign = -1;
+        }
+        '+' => {
+            sign = 1;
+        }
+        digit @ '0'..='9' => {
+            sign = 1;
+            maybe_digit = Some(digit);
+        }
+        ch @ _ => {
+            return Err(JsonError::UnexpectedChar(ch));
+        }
+    }
+
+    let mut iter = maybe_digit.into_iter().chain(json_iter);
+
+    let mut exponent: i32 = 0;
+
+    loop {
+        match iter.next() {
+            Some(digit @ '0'..='9') => {
+                exponent *= 10;
+                exponent += digit.to_digit(10).unwrap() as i32;
+            }
+            //jesus…
+            option @ _ => {
+                let result = number * (10_f64).powi(exponent * sign);
+                return Ok((result, option));
+            }
+        }
+    }
 }
 
 //expects starting '"' to already be eaten
@@ -282,10 +338,53 @@ fn parse_escape_character_impl(
         'n' => Ok('\n'),
         'r' => Ok('\r'),
         't' => Ok('\t'),
-        'f' => todo!("implement \\f escape char"),
-        'b' => todo!("implement \\b escape char"),
-        'u' => todo!("unicode"),
+        'f' => Ok('\u{0C}'),
+        'b' => Ok('\u{08}'),
+        'u' => parse_escaped_unicode(json_iter),
         _ => Err(JsonError::UnknownEscapeCharacter(ch)),
+    }
+}
+
+fn parse_escaped_unicode(json_iter: &mut dyn Iterator<Item = char>) -> Result<char, JsonError> {
+    let mut sum = 0_u16;
+
+    for ch in json_iter.take(4) {
+        let digit = ch.to_digit(0x10).ok_or(JsonError::InvalidUnicode)? as u16;
+
+        sum *= 0x10;
+        sum += digit;
+    }
+
+    //utf16 surrogate pair
+    if sum >= 0xD800 && sum <= 0xDFFF {
+        if json_iter.take(2).ne("\\u".chars()) {
+            //should be followed by another utf16 surrogate
+            return Err(JsonError::InvalidUnicode);
+        }
+
+        let mut second_sum = 0_u16;
+
+        for ch in json_iter.take(4) {
+            let digit = ch.to_digit(0x10).ok_or(JsonError::InvalidUnicode)? as u16;
+
+            second_sum *= 0x10;
+            second_sum += digit;
+        }
+
+        let pair = [sum as u16, second_sum];
+
+        let mut utf16 = char::decode_utf16(pair).map(|r| r.map_err(|_| JsonError::InvalidUnicode));
+
+        let decoded_char = utf16.next().ok_or(JsonError::InvalidUnicode)?;
+
+        if utf16.next().is_none() {
+            decoded_char
+        } else {
+            //should always be a pair thus returning only one char
+            unreachable!();
+        }
+    } else {
+        char::from_u32(sum as u32).ok_or(JsonError::InvalidUnicode)
     }
 }
 
@@ -507,7 +606,7 @@ mod tests {
     #[test]
     fn just_a_number() {
         assert!(
-            matches!(parse_json_string("123").unwrap(), JsonObject::Number(ch @ _) if {ch == 123.})
+            matches!(parse_json_string("123.55").unwrap(), JsonObject::Number(ch @ _) if {ch == 123.55})
         );
 
         parse_json_string("    3216546549879876214351.25416546546545646546546321   ").unwrap();
@@ -528,6 +627,58 @@ mod tests {
             .ok_or("not a number")?;
 
         assert_eq!(123456789., result);
+
+        Ok(())
+    }
+
+    #[test]
+    fn e_notation() -> Result<(), Box<dyn std::error::Error>> {
+        let result = parse_json_string(" 1.6E-35 ")?
+            .into_number()
+            .ok_or("not a number")?;
+
+        let float = 1.6E-35;
+
+        let diff = (float - result).abs();
+
+        assert!(diff < 0.01);
+
+        Ok(())
+    }
+
+    #[test]
+    fn utf8_parsing() -> Result<(), Box<dyn std::error::Error>> {
+        let json = parse_json_string(r#" "\u20AC\uD55C" "#)?
+            .into_string()
+            .unwrap();
+
+        let str = "€한";
+
+        assert_eq!(json, str);
+
+        Ok(())
+    }
+
+    #[test]
+    fn utf16_surrogate_pairs() -> Result<(), Box<dyn std::error::Error>> {
+        let json = parse_json_string(r#" "\uD83D\uDE10" "#)?;
+
+        let string = json.into_string().unwrap();
+
+        let other_string = "😐".to_owned();
+
+        assert_eq!(string, other_string);
+
+        Ok(())
+    }
+
+    #[test]
+    fn escape_characters() -> Result<(), Box<dyn std::error::Error>> {
+        let str = parse_json_string(r#" "\b\f\t\n\r\\\/\"" "#)?
+            .into_string()
+            .unwrap();
+
+        println!("{}", str);
 
         Ok(())
     }
