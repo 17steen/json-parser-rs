@@ -1,7 +1,3 @@
-#![feature(box_syntax)]
-#![feature(try_blocks)]
-#![feature(bool_to_option)]
-
 pub type Array = Vec<JsonObject>;
 pub type ObjectImpl = Vec<(String, JsonObject)>;
 
@@ -184,7 +180,7 @@ fn parse_json_impl(
         //object
         '{' => parse_object_impl(&mut chars).map(JsonObject::Object),
         //has to be a number
-        ch @ _ => {
+        ch => {
             return parse_number_impl(json_iter, ch)
                 .map(|(n, excess)| (JsonObject::Number(n), excess));
         }
@@ -204,7 +200,7 @@ fn parse_number_impl(
             sign = -1.;
             iter.next().ok_or(JsonError::EarlyEndOfStream)?
         }
-        other @ _ => {
+        other => {
             sign = 1.;
             other
         }
@@ -216,7 +212,7 @@ fn parse_number_impl(
         '0' => match iter.next().ok_or(JsonError::EarlyEndOfStream)? {
             '.' => return parse_fraction_part_impl(iter, 0., sign),
             'e' | 'E' => return parse_e_notation_impl(iter, 0.),
-            ch @ _ => return Ok((0., Some(ch))),
+            ch => return Ok((0., Some(ch))),
         },
         _ => return Err(JsonError::UnexpectedChar(first_char)),
     };
@@ -234,7 +230,7 @@ fn parse_number_impl(
                 return parse_e_notation_impl(iter, number * sign);
             }
             //jesus…
-            option @ _ => return Ok((number * sign, option)),
+            option => return Ok((number * sign, option)),
         }
     }
 }
@@ -257,7 +253,7 @@ fn parse_fraction_part_impl(
                 return parse_e_notation_impl(iter, (number + integer_part) * sign);
             }
             //jesus…
-            option @ _ => {
+            option => {
                 let result = (integer_part + number) * sign;
                 return Ok((result, option));
             }
@@ -286,7 +282,7 @@ fn parse_e_notation_impl(
             sign = 1;
             maybe_digit = Some(digit);
         }
-        ch @ _ => {
+        ch => {
             return Err(JsonError::UnexpectedChar(ch));
         }
     }
@@ -302,7 +298,7 @@ fn parse_e_notation_impl(
                 exponent += digit.to_digit(10).unwrap() as i32;
             }
             //jesus…
-            option @ _ => {
+            option => {
                 let result = number * (10_f64).powi(exponent * sign);
                 return Ok((result, option));
             }
@@ -320,7 +316,7 @@ fn parse_string_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<String
                 return Ok(result);
             }
             '\\' => result.push(parse_escape_character_impl(json_iter)?),
-            ch @ _ => {
+            ch => {
                 result.push(ch);
             }
         }
@@ -398,7 +394,7 @@ fn parse_object_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Ob
 
         match skipped.next().ok_or(JsonError::EarlyEndOfStream)? {
             '"' => {}
-            ch @ _ => {
+            ch => {
                 if could_be_empty && ch == '}' {
                     return Ok(Object::from_impl(object));
                 } else {
@@ -415,7 +411,7 @@ fn parse_object_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Ob
 
         match skipped.next().ok_or(JsonError::EarlyEndOfStream)? {
             ':' => {}
-            ch @ _ => return Err(JsonError::UnexpectedChar(ch)),
+            ch => return Err(JsonError::UnexpectedChar(ch)),
         }
 
         let (value, maybe_excess) = parse_json_impl(json_iter)?;
@@ -430,7 +426,7 @@ fn parse_object_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Ob
         match skipped.next().ok_or(JsonError::EarlyEndOfStream)? {
             ',' => continue,
             '}' => return Ok(Object::from_impl(object)),
-            ch @ _ => return Err(JsonError::UnexpectedChar(ch)),
+            ch => return Err(JsonError::UnexpectedChar(ch)),
         }
     }
 }
@@ -438,27 +434,27 @@ fn parse_object_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Ob
 fn parse_null_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<JsonObject, JsonError> {
     //                    "_n_ull"
     if json_iter.take(3).eq("ull".chars()) {
-        return Ok(JsonObject::Null);
+        Ok(JsonObject::Null)
     } else {
-        return Err(JsonError::UnexpectedKeyword);
+        Err(JsonError::UnexpectedKeyword)
     }
 }
 
 fn parse_true_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<JsonObject, JsonError> {
     //                    "_t_rue"
     if json_iter.take(3).eq("rue".chars()) {
-        return Ok(JsonObject::Boolean(true));
+        Ok(JsonObject::Boolean(true))
     } else {
-        return Err(JsonError::UnexpectedKeyword);
+        Err(JsonError::UnexpectedKeyword)
     }
 }
 
 fn parse_false_impl(json_iter: &mut dyn Iterator<Item = char>) -> Result<JsonObject, JsonError> {
     //                    "_f_alse"
     if json_iter.take(4).eq("alse".chars()) {
-        return Ok(JsonObject::Boolean(false));
+        Ok(JsonObject::Boolean(false))
     } else {
-        return Err(JsonError::UnexpectedKeyword);
+        Err(JsonError::UnexpectedKeyword)
     }
 }
 
@@ -503,7 +499,7 @@ fn parse_array_impl(mut json_iter: &mut dyn Iterator<Item = char>) -> Result<Arr
         match chars.next().ok_or(JsonError::EarlyEndOfStream)? {
             ',' => continue,
             ']' => return Ok(vec),
-            ch @ _ => return Err(JsonError::UnexpectedChar(ch)),
+            ch => return Err(JsonError::UnexpectedChar(ch)),
         }
     }
 }
@@ -696,22 +692,25 @@ mod tests {
         }"#,
         )?;
 
-        let maybe: Option<()> = try {
-            json.object_mut()?
-                .get_mut("my_array")?
-                .array_mut()?
-                .sort_by(|a, b| a.number().partial_cmp(&b.number()).unwrap());
+        json.object_mut()
+            .unwrap()
+            .get_mut("my_array")
+            .unwrap()
+            .array_mut()
+            .unwrap()
+            .sort_by(|a, b| a.number().partial_cmp(&b.number()).unwrap());
 
-            assert!(json
-                .object()?
-                .get("my_array")?
-                .array()?
-                .iter()
-                .map(JsonObject::number)
-                .map(Option::unwrap)
-                .eq(&[42., 73., 727.]));
-        };
-
-        maybe.ok_or("nope".into())
+        assert!(json
+            .object()
+            .unwrap()
+            .get("my_array")
+            .unwrap()
+            .array()
+            .unwrap()
+            .iter()
+            .map(JsonObject::number)
+            .map(Option::unwrap)
+            .eq(&[42., 73., 727.]));
+        Ok(())
     }
 }
