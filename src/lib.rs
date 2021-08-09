@@ -33,11 +33,11 @@ impl Object {
         self.entries_mut().iter_mut().map(|(key, _)| key)
     }
 
-    pub fn values(&self) -> impl DoubleEndedIterator + '_ {
+    pub fn values(&self) -> impl DoubleEndedIterator<Item = &JsonObject> + '_ {
         self.entries().iter().map(|(_, value)| value)
     }
 
-    pub fn values_mut(&mut self) -> impl DoubleEndedIterator + '_ {
+    pub fn values_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut JsonObject> + '_ {
         self.entries_mut().iter_mut().map(|(_, value)| value)
     }
 
@@ -691,6 +691,8 @@ mod tests {
                 "empty object" : { }
         }"#,
         )?;
+
+        json.object().unwrap().entries().iter().for_each(|v| println!("{:?}", v));
 
         json.object_mut()
             .unwrap()
